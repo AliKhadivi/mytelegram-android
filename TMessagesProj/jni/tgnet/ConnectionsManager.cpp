@@ -34,6 +34,12 @@
 #include "ProxyCheckInfo.h"
 #include "Handshake.h"
 
+namespace {
+constexpr uint32_t kPrimaryDatacenterId = 2;
+constexpr uint16_t kPrimaryDatacenterPort = 20443;
+constexpr const char kPrimaryDatacenterIp[] = "192.168.1.100";
+}
+
 #ifdef ANDROID
 #include <jni.h>
 JavaVM *javaVm = nullptr;
@@ -403,10 +409,14 @@ void ConnectionsManager::loadConfig() {
                 count = buffer->readUint32(nullptr);
                 for (uint32_t a = 0; a < count; a++) {
                     auto datacenter = new Datacenter(instanceNum, buffer);
-                    datacenters[datacenter->getDatacenterId()] = datacenter;
-                    if (LOGS_ENABLED) DEBUG_D("datacenter(%p) %u loaded (hasAuthKey = %d, 0x%" PRIx64 ")", datacenter, datacenter->getDatacenterId(), (int) datacenter->hasPermanentAuthKey(), datacenter->getPermanentAuthKeyId());
-                    if (datacenter->isCdnDatacenter && !datacenter->hasPermanentAuthKey()) {
-                        datacenter->clearAuthKey(HandshakeTypePerm);
+                    if (datacenter->getDatacenterId() == kPrimaryDatacenterId) {
+                        datacenters[datacenter->getDatacenterId()] = datacenter;
+                        if (LOGS_ENABLED) DEBUG_D("datacenter(%p) %u loaded (hasAuthKey = %d, 0x%" PRIx64 ")", datacenter, datacenter->getDatacenterId(), (int) datacenter->hasPermanentAuthKey(), datacenter->getPermanentAuthKeyId());
+                        if (datacenter->isCdnDatacenter && !datacenter->hasPermanentAuthKey()) {
+                            datacenter->clearAuthKey(HandshakeTypePerm);
+                        }
+                    } else {
+                        delete datacenter;
                     }
                 }
             }
@@ -432,12 +442,16 @@ void ConnectionsManager::loadConfig() {
 
     initDatacenters();
 
+    if (datacenters.find(currentDatacenterId) == datacenters.end()) {
+        currentDatacenterId = kPrimaryDatacenterId;
+    }
+
     if ((!datacenters.empty() && currentDatacenterId == 0) || pushSessionId == 0) {
         if (pushSessionId == 0) {
             RAND_bytes((uint8_t *) &pushSessionId, 8);
         }
         if (currentDatacenterId == 0) {
-            currentDatacenterId = 2;
+            currentDatacenterId = kPrimaryDatacenterId;
         }
         saveConfig();
     }
@@ -1807,68 +1821,30 @@ uint8_t ConnectionsManager::getIpStratagy() {
 }
 
 void ConnectionsManager::initDatacenters() {
+    auto iter = datacenters.find(kPrimaryDatacenterId);
     Datacenter *datacenter;
-    std::string ipv4="192.168.1.100";
-        std::string ipv6="fe80::91c9:ad67:3da3:4743%20";
-        uint32_t port=20443;
-        uint32_t port2=20443;
-    if (!testBackend) {
-        if (datacenters.find(1) == datacenters.end()) {
-            datacenter = new Datacenter(instanceNum, 1);
-                datacenter->addAddressAndPort(ipv4, port, 0, "");
-//                datacenter->addAddressAndPort(ipv6, port, 1, "");
-            datacenters[1] = datacenter;
-        }
-
-        if (datacenters.find(2) == datacenters.end()) {
-            datacenter = new Datacenter(instanceNum, 2);
-                datacenter->addAddressAndPort(ipv4, port, 0, "");
-//                datacenter->addAddressAndPort(ipv6, port, 1, "");
-            datacenters[2] = datacenter;
-        }
-
-        if (datacenters.find(3) == datacenters.end()) {
-            datacenter = new Datacenter(instanceNum, 3);
-                 datacenter->addAddressAndPort(ipv4, port2, 0, "");
-//                 datacenter->addAddressAndPort(ipv6, port2, 1, "");
-            datacenters[3] = datacenter;
-        }
-
-//        if (datacenters.find(4) == datacenters.end()) {
-//            datacenter = new Datacenter(instanceNum, 4);
-//                 datacenter->addAddressAndPort(ipv4, port, 0, "");
-//                 datacenter->addAddressAndPort(ipv6, port, 1, "");
-//            datacenters[4] = datacenter;
-//        }
-
-//        if (datacenters.find(5) == datacenters.end()) {
-//            datacenter = new Datacenter(instanceNum, 5);
-//                 datacenter->addAddressAndPort(ipv4, port, 0, "");
-//                 datacenter->addAddressAndPort(ipv6, port, 1, "");
-//            datacenters[5] = datacenter;
-//        }
+    if (iter == datacenters.end()) {
+        datacenter = new Datacenter(instanceNum, kPrimaryDatacenterId);
+        datacenters[kPrimaryDatacenterId] = datacenter;
     } else {
-        if (datacenters.find(1) == datacenters.end()) {
-            datacenter = new Datacenter(instanceNum, 1);
-                datacenter->addAddressAndPort(ipv4, port, 0, "");
-//                datacenter->addAddressAndPort(ipv6, port, 1, "");
-            datacenters[1] = datacenter;
-        }
-
-        if (datacenters.find(2) == datacenters.end()) {
-            datacenter = new Datacenter(instanceNum, 2);
-                datacenter->addAddressAndPort(ipv4, port, 0, "");
-//                datacenter->addAddressAndPort(ipv6, port, 1, "");
-            datacenters[2] = datacenter;
-        }
-
-        if (datacenters.find(3) == datacenters.end()) {
-            datacenter = new Datacenter(instanceNum, 3);
-                 datacenter->addAddressAndPort(ipv4, port, 0, "");
-//                 datacenter->addAddressAndPort(ipv6, port, 1, "");
-            datacenters[3] = datacenter;
-        }
+        datacenter = iter->second;
     }
+
+    auto assignAddresses = [&](uint32_t flags) {
+        std::vector<TcpAddress> addresses;
+        addresses.emplace_back(kPrimaryDatacenterIp, (int32_t) kPrimaryDatacenterPort, (int32_t) flags, "");
+        datacenter->replaceAddresses(addresses, flags);
+    };
+
+    assignAddresses(0);
+    assignAddresses(TcpAddressFlagDownload);
+
+    std::vector<TcpAddress> emptyAddresses;
+    datacenter->replaceAddresses(emptyAddresses, TcpAddressFlagIpv6);
+    datacenter->replaceAddresses(emptyAddresses, TcpAddressFlagIpv6 | TcpAddressFlagDownload);
+    datacenter->replaceAddresses(emptyAddresses, TcpAddressFlagTemp);
+
+    datacenter->resetAddressAndPortNum();
 }
 
 void ConnectionsManager::attachConnection(ConnectionSocket *connection) {
@@ -2038,7 +2014,7 @@ void ConnectionsManager::setUserId(int64_t userId) {
 
 void ConnectionsManager::switchBackend(bool restart) {
     scheduleTask([&, restart] {
-        currentDatacenterId = 1;
+        currentDatacenterId = kPrimaryDatacenterId;
         testBackend = !testBackend;
         if (!restart) {
             Handshake::cleanupServerKeys();
@@ -3413,6 +3389,9 @@ void ConnectionsManager::updateDcSettings(uint32_t dcNum, bool workaround, bool 
             size_t count = config->dc_options.size();
             for (uint32_t a = 0; a < count; a++) {
                 TL_dcOption *dcOption = config->dc_options[a].get();
+                if ((uint32_t) dcOption->id != kPrimaryDatacenterId) {
+                    continue;
+                }
                 auto iter = map.find((uint32_t) dcOption->id);
                 DatacenterInfo *info;
                 if (iter == map.end()) {
@@ -3431,6 +3410,12 @@ void ConnectionsManager::updateDcSettings(uint32_t dcNum, bool workaround, bool 
                         datacenter = new Datacenter(instanceNum, iter.first);
                         datacenters[iter.first] = datacenter;
                     }
+                    info->addressesIpv4.clear();
+                    info->addressesIpv4.emplace_back(kPrimaryDatacenterIp, kPrimaryDatacenterPort, 0, "");
+                    info->addressesIpv6.clear();
+                    info->addressesIpv4Download.clear();
+                    info->addressesIpv4Download.emplace_back(kPrimaryDatacenterIp, kPrimaryDatacenterPort, TcpAddressFlagDownload, "");
+                    info->addressesIpv6Download.clear();
                     datacenter->replaceAddresses(info->addressesIpv4, info->isCdn ? 8 : 0);
                     datacenter->replaceAddresses(info->addressesIpv6, info->isCdn ? 9 : 1);
                     datacenter->replaceAddresses(info->addressesIpv4Download, info->isCdn ? 10 : 2);
@@ -3458,6 +3443,12 @@ void ConnectionsManager::updateDcSettings(uint32_t dcNum, bool workaround, bool 
 }
 
 void ConnectionsManager::moveToDatacenter(uint32_t datacenterId) {
+    if (datacenterId != kPrimaryDatacenterId) {
+        if (LOGS_ENABLED) {
+            DEBUG_D("ignoring request to move to dc%u, sticking with primary dc%u", datacenterId, kPrimaryDatacenterId);
+        }
+        datacenterId = kPrimaryDatacenterId;
+    }
     if (movingToDatacenterId == datacenterId) {
         return;
     }
