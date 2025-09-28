@@ -434,8 +434,8 @@ void Handshake::processHandshakeResponse_resPQ(TLObject *message, int64_t messag
         TLObject *innerData;
         if (handshakeType == HandshakeTypePerm) {
             auto tl_p_q_inner_data = new TL_p_q_inner_data_dc();
-            tl_p_q_inner_data->nonce = std::make_unique<ByteArray>(authNonce);
-            tl_p_q_inner_data->server_nonce = std::make_unique<ByteArray>(authServerNonce);
+            tl_p_q_inner_data->nonce = std::make_unique<ByteArray>(new ByteArray(authNonce));
+            tl_p_q_inner_data->server_nonce = std::make_unique<ByteArray>(new ByteArray(authServerNonce));
             tl_p_q_inner_data->pq = std::make_unique<ByteArray>(new ByteArray(result->pq.get()));
             tl_p_q_inner_data->p = std::make_unique<ByteArray>(new ByteArray(request->p.get()));
             tl_p_q_inner_data->q = std::make_unique<ByteArray>(new ByteArray(request->q.get()));
@@ -1058,5 +1058,9 @@ void Handshake::onHandshakeConnectionConnected() {
     if (handshakeState == 0 || !needResendData) {
         return;
     }
-    beginHandshake(false);
+
+    needResendData = false;
+    if (handshakeRequest != nullptr) {
+        sendRequestData(handshakeRequest, true);
+    }
 }
